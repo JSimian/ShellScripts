@@ -22,7 +22,7 @@ echo -e "${BOLD}=== REQUIREMENTS CHECKER: EAC v2 ===${NC}\n"
 echo -e "This script is provided 'as is' and has no connection or affiliation with Easy Anti-Cheat, Epic Games, their developers, or any third party."
 echo -e "The sole purpose of this script is to facilitate the identification of non-compliance points based on what has been disclosed up to the date mentioned below."
 echo -e "It should not be understood as a certificate of compatibility."
-echo -e "For further information please see your distro documentation or EAC documentation"
+echo -e "For further information please see your distro documentation or EAC documentation\n"
 echo -e "* Known requirements as of 2026-11-06\n"
 
 # Sudo needed
@@ -201,3 +201,7 @@ elif [ "$SESSION_TYPE" = "x11" ]; then
 else
     echo -e "[ ${YELLOW}!?${NC} ] 11. Display Server: Not detected (Returned type: $SESSION_TYPE)"
 fi
+
+echo -e "\n\n"
+read -n 1 -s -r -p "Press any key to exit"
+clear
