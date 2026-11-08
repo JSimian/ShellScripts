@@ -1,12 +1,12 @@
+
 # This script is provided "as is" and has no connection or affiliation with Easy Anti-Cheat, Epic Games, their developers, or any third party.
 # The sole purpose of this script is to facilitate the identification of non-compliance points based on what has been disclosed up to the date mentioned below.
 # It should not be understood as a certificate of compatibility.
 # For further information please see your distro documentation or EAC documentation
-# Script distribuititon umder MIT license
+# Script distribution under MIT license
 #
-# Don't forget to run 'chmod +x EAC_v2_ Requirements_Check.sh' before running =)
-# This script needs root privilegies
-
+# Don't forget to run 'chmod +x EAC_v2_Requirements_Check.sh' before running =)
+# This script needs root privileges
 #!/usr/bin/env bash
 
 # Script environment
@@ -15,13 +15,15 @@ RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 BOLD='\033[1m'
+
 clear
 
 echo -e "${BOLD}=== REQUIREMENTS CHECKER: EAC v2 ===${NC}\n"
-
 echo -e "This script is provided 'as is' and has no connection or affiliation with Easy Anti-Cheat, Epic Games, their developers, or any third party."
 echo -e "The sole purpose of this script is to facilitate the identification of non-compliance points based on what has been disclosed up to the date mentioned below."
 echo -e "It should not be understood as a certificate of compatibility."
+echo -e "Note: Item 5.: Signature status is indicative only. This script does not validate"
+echo -e "the Epic Games trusted keys because we doesn't know it."
 echo -e "For further information please see your distro documentation or EAC documentation\n"
 echo -e "* Known requirements as of 2026-11-06\n"
 
@@ -60,13 +62,16 @@ fi
 
 # 2. Secure Boot
 SB_ACTIVE=false
+
 if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -iq "enabled"; then
     SB_ACTIVE=true
 elif command -v bootctl >/dev/null 2>&1 && bootctl status 2>/dev/null | grep -iq "Secure Boot: enabled"; then
     SB_ACTIVE=true
 elif [ -f /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c ] && command -v hexdump >/dev/null 2>&1; then
     sb_hex=$(hexdump -v -e '/1 "%02X"' /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | tail -c 2)
-    if [ "$sb_hex" = "01" ]; then SB_ACTIVE=true; fi
+    if [ "$sb_hex" = "01" ]; then
+        SB_ACTIVE=true
+    fi
 fi
 
 if [ "$SB_ACTIVE" = true ]; then
@@ -76,12 +81,25 @@ else
 fi
 
 # 3. TPM 2.0
-if [ -c /dev/tpm0 ] || [ -c /dev/tpmrm0 ]; then
-    echo -e "[ ${GREEN}✓${NC} ] 3. TPM 2.0: Hardware detected"
-    TPM_ACTIVE=true
+TPM_ACTIVE=false
+
+for tpm_version_file in /sys/class/tpm/tpm*/tpm_version_major; do
+    if [ -r "$tpm_version_file" ]; then
+        tpm_version=$(cat "$tpm_version_file" 2>/dev/null)
+
+        if [ "$tpm_version" = "2" ]; then
+            TPM_ACTIVE=true
+            break
+        fi
+    fi
+done
+
+if [ "$TPM_ACTIVE" = true ]; then
+    echo -e "[ ${GREEN}✓${NC} ] 3. TPM 2.0: Detected"
+elif [ -c /dev/tpm0 ] || [ -c /dev/tpmrm0 ]; then
+    echo -e "[ ${YELLOW}?${NC} ] 3. TPM: Device detected, but TPM 2.0 version could not be confirmed"
 else
-    echo -e "[ ${RED}✗${NC} ] 3. TPM 2.0: Not found in /dev/ (Required)"
-    TPM_ACTIVE=false
+    echo -e "[ ${RED}✗${NC} ] 3. TPM 2.0: Not detected (Required)"
 fi
 
 # 4. Measured Boot
@@ -89,9 +107,9 @@ if [ "$TPM_ACTIVE" = true ] && { [ -d /sys/kernel/security/tpm0/binary_bios_meas
     echo -e "[ ${GREEN}✓${NC} ] 4. Measured Boot: Active and generating logs"
 else
     if [ "$TPM_ACTIVE" = true ]; then
-        echo -e "[ ${YELLOW}!?${NC} ] 4. Measured Boot: TPM present, but boot logs missing (Check your bootloader/IMA configuration)"
+        echo -e "[ ${YELLOW}?${NC} ] 4. Measured Boot: TPM 2.0 present, but boot logs missing (Check your bootloader/IMA configuration)"
     else
-        echo -e "[ ${RED}✗${NC} ] 4. Measured Boot: Inactive (Depends on TPM 2.0)"
+        echo -e "[ ${RED}✗${NC} ] 4. Measured Boot: TPM 2.0 not confirmed"
     fi
 fi
 
@@ -100,14 +118,15 @@ echo -e "\n${BOLD}--- Kernel Security ---${NC}"
 # 5. Kernel and Modules Signature
 if [ "$SB_ACTIVE" = true ]; then
     taint_out=$(cat /proc/sys/kernel/tainted 2>/dev/null || echo 0)
+
     # Bit 13 (8192) = TAINT_UNSIGNED_MODULE
     if (( taint_out & 8192 )); then
-        echo -e "[ ${YELLOW}!?${NC} ] 5. Signed Kernel: Kernel OK, but UNSIGNED modules are loaded (e.g., Proprietary drivers without MOK key)"
+        echo -e "[ ${RED}x${NC} ] 5. Kernel and Modules: An unsigned module load was recorded"
     else
-        echo -e "[ ${GREEN}✓${NC} ] 5. Signed Kernel and Modules: Yes"
+        echo -e "[ ${YELLOW}?${NC} ] 5. Kernel and Modules: No unsigned module load recorded (Full signature chain not verified)"
     fi
 else
-    echo -e "[ ${RED}✗${NC} ] 5. Signed Kernel: Strict validation fails if Secure Boot is disabled"
+    echo -e "[ ${RED}✗${NC} ] 5. Kernel and Modules: Secure Boot is disabled; signature status cannot be assumed"
 fi
 
 # 6. IOMMU (Intel VT-d / AMD-Vi)
@@ -123,24 +142,26 @@ fi
 
 # 7. Kernel Lockdown
 lockdown_state=$(cat /sys/kernel/security/lockdown 2>/dev/null || echo "none")
+
 if echo "$lockdown_state" | grep -q "\[integrity\]"; then
     echo -e "[ ${GREEN}✓${NC} ] 7. Kernel Lockdown: Enabled in [integrity] mode"
 elif echo "$lockdown_state" | grep -q "\[confidentiality\]"; then
-    echo -e "[ ${GREEN}✓${NC} ] 7. Kernel Lockdown: Enabled in [confidentiality] mode"
+    echo -e "[ ${RED}✗${NC} ] 7. Kernel Lockdown: [confidentiality] mode detected; [integrity] is required"
 else
-    echo -e "[ ${RED}✗${NC} ] 7. Kernel Lockdown: Disabled or in 'none' mode (Required to prevent RAM injection)"
+    echo -e "[ ${RED}✗${NC} ] 7. Kernel Lockdown: Disabled or in 'none' mode (Required)"
 fi
 
 # 8. Kexec
 if [ -f /proc/sys/kernel/kexec_load_disabled ]; then
     kexec_status=$(cat /proc/sys/kernel/kexec_load_disabled 2>/dev/null || echo 0)
-    if [ "$kexec_status" = "1" ] || echo "$lockdown_state" | grep -q -E "\[integrity\]|\[confidentiality\]"; then
+
+    if [ "$kexec_status" = "1" ] || echo "$lockdown_state" | grep -q "\[integrity\]"; then
         echo -e "[ ${GREEN}✓${NC} ] 8. Kexec: Disabled/Locked"
     else
         echo -e "[ ${RED}✗${NC} ] 8. Kexec: Active (Incompatible, allows anti-cheat evasion)"
     fi
 else
-    echo -e "[ ${YELLOW}!?${NC} ] 8. Kexec: Status file unavailable"
+    echo -e "[ ${YELLOW}?${NC} ] 8. Kexec: Status file unavailable"
 fi
 
 # 9. BPF LSM (eBPF)
@@ -163,15 +184,16 @@ if command -v systemd-detect-virt >/dev/null 2>&1; then
     VIRT_STATUS=$(systemd-detect-virt)
 elif [ -f /sys/class/dmi/id/sys_vendor ]; then
     sys_vendor=$(cat /sys/class/dmi/id/sys_vendor | tr '[:upper:]' '[:lower:]')
+
     if [[ "$sys_vendor" == *"qemu"* ]] || [[ "$sys_vendor" == *"vmware"* ]] || [[ "$sys_vendor" == *"virtualbox"* ]] || [[ "$sys_vendor" == *"innotek"* ]]; then
         VIRT_STATUS="hardware_simulado"
     fi
 fi
 
 if [ "$VIRT_STATUS" = "none" ]; then
-    echo -e "[ ${GREEN}✓${NC} ] 10. Virtualization: No VM detected (Bare-metal approved)"
+    echo -e "[ ${GREEN}✓${NC} ] 10. Virtualization: No VM detected (Bare-metal)"
 else
-    echo -e "[ ${RED}✗${NC} ] 10. Virtualization: [$VIRT_STATUS] environment detected (Imminent block by EAC)"
+    echo -e "[ ${RED}✗${NC} ] 10. Virtualization: [$VIRT_STATUS] environment detected"
 fi
 
 # 11. Display Server
@@ -181,6 +203,7 @@ REAL_UID=$(id -u "$REAL_USER" 2>/dev/null)
 
 if command -v loginctl >/dev/null 2>&1; then
     SESSION_ID=$(loginctl list-sessions | grep " $REAL_USER " | grep "seat" | awk '{print $1}' | head -n 1)
+
     if [ -n "$SESSION_ID" ]; then
         SESSION_TYPE=$(loginctl show-session "$SESSION_ID" -p Type --value 2>/dev/null)
     fi
@@ -195,13 +218,13 @@ if [ "$SESSION_TYPE" = "unknown" ] || [ -z "$SESSION_TYPE" ] || [ "$SESSION_TYPE
 fi
 
 if [ "$SESSION_TYPE" = "wayland" ]; then
-    echo -e "[ ${GREEN}✓${NC} ] 11. Display Server: Wayland (Native screen/input isolation detected via socket)"
+    echo -e "[ ${GREEN}✓${NC} ] 11. Display Server: Wayland"
 elif [ "$SESSION_TYPE" = "x11" ]; then
-    echo -e "[ ${YELLOW}!?${NC} ] 11. Display Server: X11 (Vulnerable to global reading - Possible flag by Anti-Cheat)"
+    echo -e "[ ${YELLOW}?${NC} ] 11. Display Server: X11"
 else
-    echo -e "[ ${YELLOW}!?${NC} ] 11. Display Server: Not detected (Returned type: $SESSION_TYPE)"
+    echo -e "[ ${YELLOW}?${NC} ] 11. Display Server: Not detected (Returned type: $SESSION_TYPE)"
 fi
 
-echo -e "\n\n"
+
 read -n 1 -s -r -p "Press any key to exit"
 clear
