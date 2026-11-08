@@ -1,4 +1,6 @@
 
+#!/usr/bin/env bash
+
 # This script is provided "as is" and has no connection or affiliation with Easy Anti-Cheat, Epic Games, their developers, or any third party.
 # The sole purpose of this script is to facilitate the identification of non-compliance points based on what has been disclosed up to the date mentioned below.
 # It should not be understood as a certificate of compatibility.
@@ -7,7 +9,6 @@
 #
 # Don't forget to run 'chmod +x EAC_v2_Requirements_Check.sh' before running =)
 # This script needs root privileges
-#!/usr/bin/env bash
 
 # Script environment
 GREEN='\033[0;32m'
@@ -22,8 +23,6 @@ echo -e "${BOLD}=== REQUIREMENTS CHECKER: EAC v2 ===${NC}\n"
 echo -e "This script is provided 'as is' and has no connection or affiliation with Easy Anti-Cheat, Epic Games, their developers, or any third party."
 echo -e "The sole purpose of this script is to facilitate the identification of non-compliance points based on what has been disclosed up to the date mentioned below."
 echo -e "It should not be understood as a certificate of compatibility."
-echo -e "Note: Item 5.: Signature status is indicative only. This script does not validate"
-echo -e "the Epic Games trusted keys because we doesn't know it."
 echo -e "For further information please see your distro documentation or EAC documentation\n"
 echo -e "* Known requirements as of 2026-11-06\n"
 
@@ -97,17 +96,25 @@ done
 if [ "$TPM_ACTIVE" = true ]; then
     echo -e "[ ${GREEN}✓${NC} ] 3. TPM 2.0: Detected"
 elif [ -c /dev/tpm0 ] || [ -c /dev/tpmrm0 ]; then
-    echo -e "[ ${YELLOW}?${NC} ] 3. TPM: Device detected, but TPM 2.0 version could not be confirmed"
+    echo -e "[ ${YELLOW}!?${NC} ] 3. TPM: Device detected, but TPM 2.0 version could not be confirmed"
 else
     echo -e "[ ${RED}✗${NC} ] 3. TPM 2.0: Not detected (Required)"
 fi
 
 # 4. Measured Boot
-if [ "$TPM_ACTIVE" = true ] && { [ -d /sys/kernel/security/tpm0/binary_bios_measurements ] || [ -d /sys/kernel/security/ima ]; }; then
-    echo -e "[ ${GREEN}✓${NC} ] 4. Measured Boot: Active and generating logs"
+MEASURED_BOOT_LOG="/sys/kernel/security/tpm0/binary_bios_measurements"
+
+if [ "$TPM_ACTIVE" = true ] && [ -r "$MEASURED_BOOT_LOG" ]; then
+    log_bytes=$(dd if="$MEASURED_BOOT_LOG" bs=1 count=1 2>/dev/null | wc -c)
+
+    if [ "$log_bytes" -gt 0 ]; then
+        echo -e "[ ${GREEN}✓${NC} ] 4. Measured Boot: Firmware TPM event log accessible"
+    else
+        echo -e "[ ${YELLOW}!?${NC} ] 4. Measured Boot: Firmware TPM event log is empty or unreadable"
+    fi
 else
     if [ "$TPM_ACTIVE" = true ]; then
-        echo -e "[ ${YELLOW}?${NC} ] 4. Measured Boot: TPM 2.0 present, but boot logs missing (Check your bootloader/IMA configuration)"
+        echo -e "[ ${YELLOW}!?${NC} ] 4. Measured Boot: Firmware TPM event log not accessible"
     else
         echo -e "[ ${RED}✗${NC} ] 4. Measured Boot: TPM 2.0 not confirmed"
     fi
@@ -121,9 +128,9 @@ if [ "$SB_ACTIVE" = true ]; then
 
     # Bit 13 (8192) = TAINT_UNSIGNED_MODULE
     if (( taint_out & 8192 )); then
-        echo -e "[ ${RED}x${NC} ] 5. Kernel and Modules: An unsigned module load was recorded"
+        echo -e "[ ${YELLOW}!?${NC} ] 5. Kernel and Modules: An unsigned module load was recorded"
     else
-        echo -e "[ ${YELLOW}?${NC} ] 5. Kernel and Modules: No unsigned module load recorded (Full signature chain not verified)"
+        echo -e "[ ${YELLOW}!?${NC} ] 5. Kernel and Modules: No unsigned module load detected (Signature integrity and trusted signing keys have not been verified)"
     fi
 else
     echo -e "[ ${RED}✗${NC} ] 5. Kernel and Modules: Secure Boot is disabled; signature status cannot be assumed"
@@ -131,10 +138,14 @@ fi
 
 # 6. IOMMU (Intel VT-d / AMD-Vi)
 if [ -d /sys/class/iommu ] && [ "$(ls -A /sys/class/iommu 2>/dev/null)" ]; then
-    if dmesg 2>/dev/null | grep -qi "IOMMU passthrough"; then
-        echo -e "[ ${RED}✗${NC} ] 6. IOMMU: Active in BIOS, but in 'passthrough' mode (Isolation compromised, forbidden by Epic)"
+
+    CMDLINE=$(cat /proc/cmdline 2>/dev/null)
+
+    if dmesg 2>/dev/null | grep -qi "IOMMU passthrough" || \
+       echo "$CMDLINE" | grep -Eq '(^| )(iommu=pt|iommu\.passthrough=1)( |$)'; then
+        echo -e "[ ${RED}✗${NC} ] 6. IOMMU: Active in BIOS, but passthrough mode detected (Isolation may be compromised)"
     else
-        echo -e "[ ${GREEN}✓${NC} ] 6. IOMMU: Enabled and in hardware isolation mode"
+        echo -e "[ ${GREEN}✓${NC} ] 6. IOMMU: Enabled; no explicit passthrough configuration detected"
     fi
 else
     echo -e "[ ${RED}✗${NC} ] 6. IOMMU: Disabled (Enable Intel VT-d / AMD-Vi in BIOS or remove iommu=pt from GRUB)"
@@ -152,16 +163,18 @@ else
 fi
 
 # 8. Kexec
-if [ -f /proc/sys/kernel/kexec_load_disabled ]; then
-    kexec_status=$(cat /proc/sys/kernel/kexec_load_disabled 2>/dev/null || echo 0)
+if [ -r /proc/sys/kernel/kexec_load_disabled ]; then
+    kexec_status=$(cat /proc/sys/kernel/kexec_load_disabled 2>/dev/null)
 
-    if [ "$kexec_status" = "1" ] || echo "$lockdown_state" | grep -q "\[integrity\]"; then
-        echo -e "[ ${GREEN}✓${NC} ] 8. Kexec: Disabled/Locked"
+    if [ "$kexec_status" = "1" ]; then
+        echo -e "[ ${GREEN}✓${NC} ] 8. Kexec: Loading disabled at runtime"
+    elif [ "$kexec_status" = "0" ]; then
+        echo -e "[ ${YELLOW}!?${NC} ] 8. Kexec: Loading is not disabled at runtime"
     else
-        echo -e "[ ${RED}✗${NC} ] 8. Kexec: Active (Incompatible, allows anti-cheat evasion)"
+        echo -e "[ ${YELLOW}!?${NC} ] 8. Kexec: Could not determine runtime status"
     fi
 else
-    echo -e "[ ${YELLOW}?${NC} ] 8. Kexec: Status file unavailable"
+    echo -e "[ ${YELLOW}!?${NC} ] 8. Kexec: Runtime status unavailable"
 fi
 
 # 9. BPF LSM (eBPF)
@@ -220,11 +233,16 @@ fi
 if [ "$SESSION_TYPE" = "wayland" ]; then
     echo -e "[ ${GREEN}✓${NC} ] 11. Display Server: Wayland"
 elif [ "$SESSION_TYPE" = "x11" ]; then
-    echo -e "[ ${YELLOW}?${NC} ] 11. Display Server: X11"
+    echo -e "[ ${YELLOW}!?${NC} ] 11. Display Server: X11"
 else
-    echo -e "[ ${YELLOW}?${NC} ] 11. Display Server: Not detected (Returned type: $SESSION_TYPE)"
+    echo -e "[ ${YELLOW}!?${NC} ] 11. Display Server: Not detected (Returned type: $SESSION_TYPE)"
 fi
 
+echo -e "\n"
+echo -e "Note: Signature status is indicative only. This script does not validate"
+echo -e "the complete Secure Boot signature chain or Epic Games trusted keys."
+echo -e "No third-party signature verification tools are required."
+echo -e "\n"
 
 read -n 1 -s -r -p "Press any key to exit"
-
+clear
